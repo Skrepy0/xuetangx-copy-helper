@@ -6,7 +6,7 @@
 // @supportURL   https://github.com/Skrepy0/xuetangx-copy-helper/issues
 // @source     	 https://github.com/Skrepy0/xuetangx-copy-helper
 // @license    	 MIT
-// @description  在习题页面的导航栏添加按钮，支持复制题目及答案（如果页面有显示）
+// @description  在学堂在线习题页面的导航栏添加复制按钮，支持一键复制当前练习的全部题目
 // @author       Skrepy
 // @match        https://www.xuetangx.com/learn/*/*/*/exercise/*
 // @grant        none
@@ -16,11 +16,8 @@
 
 (function () {
   "use strict";
-
   let exercise_data = null;
   let copyBtnTimeout = null;
-
-  // 拦截 fetch
   const originalFetch = window.fetch;
   window.fetch = function (...args) {
     const url = args[0];
@@ -39,16 +36,13 @@
     }
     return originalFetch.apply(this, args);
   };
-
   const XHR = XMLHttpRequest.prototype;
   const originalOpen = XHR.open;
   const originalSend = XHR.send;
-
   XHR.open = function (method, url, ...rest) {
     this._url = url;
     return originalOpen.apply(this, [method, url, ...rest]);
   };
-
   XHR.send = function (body) {
     if (this._url && this._url.includes("/get_exercise_list/")) {
       this.addEventListener("load", () => {
