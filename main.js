@@ -1,23 +1,24 @@
 // ==UserScript==
 // @name         学堂在线习题复制
-// @namespace    http://tampermonkey.net/
-// @version      1.0.0
 // @namespace    https://github.com/Skrepy0/xuetangx-copy-helper
-// @supportURL   https://github.com/Skrepy0/xuetangx-copy-helper/issues
-// @source     	 https://github.com/Skrepy0/xuetangx-copy-helper
-// @license    	 MIT
-// @description  在学堂在线习题页面的导航栏添加复制按钮，支持一键复制当前练习的全部题目
+// @version      1.0.1
+// @description  在学堂在线习题页面的导航栏添加复制按钮，支持一键复制当前练习的全部题目及答案
 // @author       Skrepy
-// @match        https://www.xuetangx.com/learn/*/*/*/exercise/*
+// @match        https://www.xuetangx.com/learn/**/exercise/**
 // @grant        none
 // @icon         https://proxt-cdn.xuetangx.com/fe-proxtassets/xuetangX/0329/logo.ico
 // @run-at       document-idle
+// @license      MIT
+// @supportURL   https://github.com/Skrepy0/xuetangx-copy-helper/issues
+// @source       https://github.com/Skrepy0/xuetangx-copy-helper
 // ==/UserScript==
 
 (function () {
   "use strict";
-  let exercise_data = null;
+
+  let exerciseData = null;
   let copyBtnTimeout = null;
+
   const originalFetch = window.fetch;
   window.fetch = function (...args) {
     const url = args[0];
@@ -28,7 +29,7 @@
           .json()
           .then((data) => {
             console.log("[CopyHelper]:Fetch捕获 习题数据", data);
-            exercise_data = data;
+            exerciseData = data;
           })
           .catch((e) => console.warn("[CopyHelper]:JSON解析失败", e));
         return response;
@@ -36,57 +37,74 @@
     }
     return originalFetch.apply(this, args);
   };
-  const XHR = XMLHttpRequest.prototype;
-  const originalOpen = XHR.open;
-  const originalSend = XHR.send;
-  XHR.open = function (method, url, ...rest) {
+
+  const xhrProto = XMLHttpRequest.prototype;
+  const originalXHROpen = xhrProto.open;
+  const originalXHRSend = xhrProto.send;
+  xhrProto.open = function (method, url, ...rest) {
     this._url = url;
-    return originalOpen.apply(this, [method, url, ...rest]);
+    return originalXHROpen.apply(this, [method, url, ...rest]);
   };
-  XHR.send = function (body) {
+  xhrProto.send = function (body) {
     if (this._url && this._url.includes("/get_exercise_list/")) {
       this.addEventListener("load", () => {
         if (this.status === 200) {
           try {
             const data = JSON.parse(this.responseText);
             console.log("[CopyHelper]:[XHR捕获] 习题数据", data);
-            exercise_data = data;
+            exerciseData = data;
           } catch (e) {}
         }
       });
     }
-    return originalSend.apply(this, [body]);
+    return originalXHRSend.apply(this, [body]);
   };
+
+  function extractAnswersFromApi(data) {
+    if (!data || !data.data || !data.data.problems) return [];
+    const problems = data.data.problems;
+    const answers = [];
+    for (let p of problems) {
+      let ans = "";
+      if (p.user && p.user.answer) ans = p.user.answer;
+      else if (p.user && p.user.correctAnswer) ans = p.user.correctAnswer;
+      else if (p.user && p.user.selected) ans = p.user.selected;
+      else if (p.answer) ans = p.answer;
+      else if (p.correctAnswer) ans = p.correctAnswer;
+      if (ans && typeof ans === "string") ans = ans.trim();
+      answers.push(ans || "");
+    }
+    return answers;
+  }
 
   function extractAnswersFromDOM() {
     const answers = [];
-    const questionContainers = document.querySelectorAll(
-      '.question-item, .exercise-question, [class*="questionItem"]',
-    );
-    if (questionContainers.length === 0) {
-      console.log("[CopyHelper]:未找到题目容器，尝试备用选择器");
-      const answerSpans = document.querySelectorAll(
-        ".correct-answer, .right-answer, .answer-text, .analysis .correct",
-      );
-      for (let el of answerSpans) {
-        answers.push(el.innerText.trim());
-      }
-      return answers;
-    }
-    for (let container of questionContainers) {
+    const containers = document.querySelectorAll(".answerCon");
+    for (let i = 0; i < containers.length; i++) {
+      const container = containers[i];
+      const answerLists = container.querySelectorAll(".answerList");
       let answer = "";
-      const ansEl = container.querySelector(
-        '.correct-answer, .right-answer, .answer, .analysis .correct, [class*="answer"]',
-      );
-      if (ansEl) {
-        answer = ansEl.innerText.trim();
-        const match = answer.match(/([A-Z]+)\b/);
-        if (match) answer = match[1];
+      if (answerLists.length >= 2) {
+        const ansSpan = answerLists[1].querySelector(".radio_xtb");
+        answer = ansSpan ? ansSpan.innerText.trim() : "";
+      }
+      if (!answer) {
+        const rightIcon = container.querySelector(".radio_xtb .right");
+        if (rightIcon) {
+          const parent = rightIcon.closest(".radio_xtb");
+          answer = parent ? parent.innerText.trim() : "";
+        }
       }
       answers.push(answer);
     }
-    console.log("[CopyHelper]:提取到的答案", answers);
     return answers;
+  }
+
+  function stripHtml(html) {
+    if (!html) return "";
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || "";
   }
 
   function formatQuestions(data, answers) {
@@ -135,13 +153,6 @@
     return output;
   }
 
-  function stripHtml(html) {
-    if (!html) return "";
-    const tmp = document.createElement("div");
-    tmp.innerHTML = html;
-    return tmp.textContent || tmp.innerText || "";
-  }
-
   function fallbackCopy(text) {
     const textarea = document.createElement("textarea");
     textarea.value = text;
@@ -149,7 +160,6 @@
     textarea.select();
     document.execCommand("copy");
     document.body.removeChild(textarea);
-    console.log("[CopyHelper]:降级复制完成");
   }
 
   function showTemporaryText(btn, tempText, duration) {
@@ -163,13 +173,15 @@
   }
 
   async function getQuestionData(btn) {
-    console.log("[CopyHelper]:按钮被点击，尝试复制题目...");
-    if (!exercise_data) {
+    if (!exerciseData) {
       showTemporaryText(btn, "数据未就绪", 2000);
       return;
     }
-    const answers = extractAnswersFromDOM();
-    const textToCopy = formatQuestions(exercise_data, answers);
+    let answers = extractAnswersFromApi(exerciseData);
+    if (answers.every((a) => !a)) {
+      answers = extractAnswersFromDOM();
+    }
+    const textToCopy = formatQuestions(exerciseData, answers);
     try {
       await navigator.clipboard.writeText(textToCopy);
       showTemporaryText(btn, "已复制", 5000);
@@ -183,34 +195,34 @@
   const TARGET_SELECTOR = ".tabbar";
   const BUTTON_ID = "copy-btn";
 
-  const onDomChange = (mutationsList, observer) => {
+  const onDomChange = () => {
     const targetContainer = document.querySelector(TARGET_SELECTOR);
     if (!targetContainer) return;
     if (targetContainer.querySelector("#" + BUTTON_ID)) return;
 
-    const copy_btn = document.createElement("button");
-    copy_btn.id = BUTTON_ID;
-    copy_btn.textContent = "复制题目";
-    copy_btn.style.backgroundColor = "#3b7cff";
-    copy_btn.style.color = "#ffffff";
-    copy_btn.style.border = "none";
-    copy_btn.style.padding = "6px 12px";
-    copy_btn.style.borderRadius = "4px";
-    copy_btn.style.fontSize = "14px";
-    copy_btn.style.fontWeight = "bold";
-    copy_btn.style.cursor = "pointer";
-    copy_btn.style.marginLeft = "10px";
-    copy_btn.style.transition = "background 0.2s, transform 0.1s ease";
-    copy_btn.style.outline = "none";
+    const copyBtn = document.createElement("button");
+    copyBtn.id = BUTTON_ID;
+    copyBtn.textContent = "复制题目";
+    copyBtn.style.backgroundColor = "#3b7cff";
+    copyBtn.style.color = "#ffffff";
+    copyBtn.style.border = "none";
+    copyBtn.style.padding = "6px 12px";
+    copyBtn.style.borderRadius = "4px";
+    copyBtn.style.fontSize = "14px";
+    copyBtn.style.fontWeight = "bold";
+    copyBtn.style.cursor = "pointer";
+    copyBtn.style.marginLeft = "10px";
+    copyBtn.style.transition = "background 0.2s, transform 0.1s ease";
+    copyBtn.style.outline = "none";
 
-    copy_btn.addEventListener("mouseenter", () => {
-      copy_btn.style.backgroundColor = "#295fcc";
+    copyBtn.addEventListener("mouseenter", () => {
+      copyBtn.style.backgroundColor = "#295fcc";
     });
-    copy_btn.addEventListener("mouseleave", () => {
-      copy_btn.style.backgroundColor = "#3b7cff";
+    copyBtn.addEventListener("mouseleave", () => {
+      copyBtn.style.backgroundColor = "#3b7cff";
     });
 
-    copy_btn.addEventListener("click", (event) => {
+    copyBtn.addEventListener("click", (event) => {
       const btn = event.currentTarget;
       btn.style.transform = "scale(0.95)";
       setTimeout(() => {
@@ -219,7 +231,7 @@
       }, 100);
     });
 
-    targetContainer.appendChild(copy_btn);
+    targetContainer.appendChild(copyBtn);
     console.log("[CopyHelper]:按钮添加成功");
   };
 
@@ -228,5 +240,5 @@
     childList: true,
     subtree: true,
   });
-  onDomChange(null, null);
+  onDomChange();
 })();
